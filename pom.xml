@@ -46,8 +46,8 @@
                 <configuration>
                     <mainClass>com.auttar.App</mainClass>
                   <environmentVariables>
-                        <CTFCLIENT_HOME>C:\Portable\CTFClient</CTFCLIENT_HOME>
-                        <PATH>%PATH%;C:\Portable\CTFClient\bin</PATH>
+                        <CTFCLIENT_HOME>C:\Program Files (x86)\Auttar\CTFClient</CTFCLIENT_HOME>
+                        <PATH>%PATH%;C:\Program Files (x86)\Auttar\CTFClient\bin</PATH>
                     </environmentVariables>
                 </configuration>
             </plugin>
