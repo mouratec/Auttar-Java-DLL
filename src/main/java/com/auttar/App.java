@@ -12,19 +12,15 @@ import java.util.Scanner;
 /**
  * 🚀 **Classe Principal da Aplicação (Ponto de Entrada)**
  * Versão atualizada:
- * 1. Timeout de 15s com handshake (Comando 08).
+ * 1. Timeout gerenciado pelo Pinpad/CTF.
  * 2. Devolução/Consulta PIX sem confirmação final ("1").
- * 3. Auto-resposta "2" (NÃO) para reconsulta PIX.
- * 4. Auto-resposta "1" (SIM) para confirmação de cancelamento por timeout.
+ * 3. Auto-resposta "1" (SIM) para reconsulta PIX.
+ * 4. Proteção contra o Erro 18 (Transação já finalizada) no PIX.
  */
 public class App {
 
     private static final Scanner scanner = new Scanner(System.in, "UTF-8");
     private static final int BUFFER_SIZE = 99000;
-
-    // Definindo timer para na requisição da interação do client exeder o tempo, a solicitação será cancelada para o Pinpad, após digitar o valor da operação
-    //Na tela APROXIME, INSIRA //OU PASSE O CARTAO -> Operacional
-    //private static final long TRANSACTION_TIMEOUT_MS = 15000;
 
     // Armazena a última mensagem/título exibido para contexto do menu
     private static String ultimaMensagemDisplay = "";
@@ -159,13 +155,10 @@ public class App {
                 tamanho = new byte[256], display = new byte[256];
         System.arraycopy("00".getBytes(), 0, comando, 0, 2);
 
-       //long startTime = System.currentTimeMillis();
-
         ret = CodigoRetornoFuncao.AguardandoContinuacao.valor;
         while (ret == CodigoRetornoFuncao.AguardandoContinuacao.valor) {
             ret = service.continuarTransacao(comando, campo, valor, tamanho, display);
             if (ret == CodigoRetornoFuncao.AguardandoContinuacao.valor) {
-                //Com Temporizador tratarComandoInterativo(comando, campo, valor, tamanho, display, camposRetornados, startTime, request);
                 tratarComandoInterativo(comando, campo, valor, tamanho, display, camposRetornados, request);
             }
         }
@@ -174,7 +167,10 @@ public class App {
         response.setOperacaoRequest(request);
 
         if (ret != CodigoRetornoFuncao.Sucesso.valor) {
-            service.finalizarTransacao("0", numTrans, camposRetornados);
+            // TRAVA 1 CONTRA O ERRO 18: Timeout (10) e Falhas no PIX não exigem rollback "0".
+            if (ret != 10 && request.getOperacao() != CodigoOperacao.PagamentoPix) {
+                service.finalizarTransacao("0", numTrans, camposRetornados);
+            }
             String msg = "Erro/Cancelamento durante o processamento. Código: " + ret;
             if (response.getMensagemRetorno().contains("Cancelado")) {
                 msg = "Transação Cancelada (Timeout ou Usuário).";
@@ -183,11 +179,35 @@ public class App {
             return;
         }
 
-        boolean precisaFinalizar = request.getOperacao() != CodigoOperacao.ConsultaPix &&
-                request.getOperacao() != CodigoOperacao.DevolucaoPix &&
-                request.getOperacao() != CodigoOperacao.ReimpressaoUltimoComprovante &&
-                request.getOperacao() != CodigoOperacao.ConfiguracaoCtfClient &&
-                request.getOperacao() != CodigoOperacao.AutenticacaoTerminal;
+        int codOperacaoReal = request.getOperacao().valor;
+        String codOperacaoFinalStr = camposRetornados.get(String.valueOf(Subcampo.CodigoOperacao.valor));
+
+        if (codOperacaoFinalStr != null && !codOperacaoFinalStr.trim().isEmpty()) {
+            try {
+                codOperacaoReal = Integer.parseInt(codOperacaoFinalStr);
+            } catch (NumberFormatException ignored) {}
+        }
+
+        boolean precisaFinalizar =
+                codOperacaoReal != CodigoOperacao.ConsultaPix.valor &&
+                        codOperacaoReal != CodigoOperacao.DevolucaoPix.valor &&
+                        codOperacaoReal != CodigoOperacao.ReimpressaoUltimoComprovante.valor &&
+                        codOperacaoReal != CodigoOperacao.ConfiguracaoCtfClient.valor &&
+                        codOperacaoReal != CodigoOperacao.AutenticacaoTerminal.valor;
+
+        // =======================================================================
+        // TRAVA 2 CONTRA O ERRO 18 NO FLUXO PIX:
+        // Lemos a Flag que foi injetada no `tratarComandoInterativo`.
+        // Se ocorreu a tela de reconsulta, a DLL já encerrou o processo e não
+        // aceitará FinalizaTransacao, independentemente se aprovou ou não.
+        // =======================================================================
+        boolean pixReconsultado = "true".equals(camposRetornados.get("PixReconsultado"));
+
+        if (codOperacaoReal == CodigoOperacao.PagamentoPix.valor) {
+            if (!response.isAprovada() || pixReconsultado) {
+                precisaFinalizar = false;
+            }
+        }
 
         if (precisaFinalizar) {
             String confirmar = response.isAprovada() ? "1" : "0";
@@ -211,13 +231,10 @@ public class App {
                 tamanho = new byte[256], display = new byte[256];
         System.arraycopy("00".getBytes(), 0, comando, 0, 2);
 
-        //long startTime = System.currentTimeMillis();
-
         ret = CodigoRetornoFuncao.AguardandoContinuacao.valor;
         while (ret == CodigoRetornoFuncao.AguardandoContinuacao.valor) {
             ret = service.continuarTransacao(comando, campo, valor, tamanho, display);
             if (ret == CodigoRetornoFuncao.AguardandoContinuacao.valor) {
-                //Com Temporizador tratarComandoInterativo(comando, campo, valor, tamanho, display, camposRetornados, startTime, request);
                 tratarComandoInterativo(comando, campo, valor, tamanho, display, camposRetornados, request);
             }
         }
@@ -310,10 +327,7 @@ public class App {
 
     /**
      * 💬 **Processa os comandos interativos da DLL.**
-     * Lógica aprimorada para distinguir menus via `ultimaMensagemDisplay`.
      */
-
-    //long startTime removido do Comantivo interativo para remover o timer
     private static void tratarComandoInterativo(byte[] comando, byte[] campo, byte[] valor, byte[] tamanho, byte[] display, Map<String, String> camposRetornados, TransactionRequest request) {
         String comandoStr = new String(comando, StandardCharsets.UTF_8).trim();
         int comandoAtual = 0;
@@ -329,63 +343,44 @@ public class App {
         try { valorTamanho = Integer.parseInt(tamanhoStr); } catch (Exception e) {}
         String valorAtual = new String(valor, 0, valorTamanho, StandardCharsets.UTF_8);
 
-
         // CORREÇÃO DOS ERROS 5317 E 5331 (CT02):
-        // A DLL da Auttar exige um "eco" (Acknowledge) para comandos de interface (ex: 03 - Limpar, 06 - Aguardar).
-        // Forçar o retorno para "00" quebra a sincronia e aborta a transação.
-        // O correto é sempre devolver o próprio comando recebido.
+        // Sempre devolver o próprio comando recebido como Eco para a DLL.
         String comandoParaProximaChamada = comandoStr;
 
         if (cmd != null) {
             switch (cmd) {
                 case ObterSubcampo:
-                    System.out.printf("INFO: Recebido Subcampo -> %s: %s%n", campoStr.substring(0, 4), valorAtual);
                     camposRetornados.put(campoStr.substring(0, 4), valorAtual);
                     break;
 
                 case ExibirMensagem: case ExibirTituloMenu: case AguardarTecla:
-                    // Atualiza a última mensagem exibida para contexto de menu
                     ultimaMensagemDisplay = valorAtual;
                     System.out.printf("INFO DLL: %s%n", valorAtual.replace(";", System.lineSeparator()));
                     break;
 
-
-                // Verifica se o tempo da transação excedeu o limite definido (15s).
-                // Se o tempo estourar, envia o comando de CANCELAMENTO (08) para a DLL.
-                // Caso contrário, mantém o comando "00" (sem cancelamento).
-                /* case VerificarCancelamento: // Comando 08
-                    if (System.currentTimeMillis() - startTime > TRANSACTION_TIMEOUT_MS) {
-                        System.out.println("\n[TIMEOUT] 15s excedidos. Enviando comando de CANCELAMENTO (08) para a DLL...");
-                        comandoParaProximaChamada = "08";
-                    } else {
-                        comandoParaProximaChamada = "00";
-                    }
-                    break; */
                 case VerificarCancelamento:
-
                     comandoParaProximaChamada = "00";
                     break;
 
                 case ExibirMenu:
-                    // Normaliza textos para verificação
                     String menuTextoUpper = valorAtual.toUpperCase().replace("Ã", "A");
                     String tituloUltimaMsg = ultimaMensagemDisplay.toUpperCase().replace("Ã", "A");
                     boolean isSimNao = menuTextoUpper.contains("SIM") && menuTextoUpper.contains("NAO");
-                    //boolean isTimeout = (System.currentTimeMillis() - startTime > TRANSACTION_TIMEOUT_MS);
 
                     String respostaAuto = null;
 
                     if (isSimNao) {
-                        // CASO 1: Menu "OPERACAO CANCELADA?" disparado por Timeout -> Responder "1" (SIM)
-                        /*
-                        if (isTimeout && tituloUltimaMsg.contains("CANCELADA")) {
-                            System.out.println("\n[AUTO] Timeout Confirmado: Respondendo '1' (SIM) para cancelamento.");
+                        // Quando a tela de timeout aparecer, injetamos uma FLAG no mapa
+                        if ((tituloUltimaMsg.contains("NOVAMENTE") || tituloUltimaMsg.contains("CONSULTA"))) {
+                            System.out.println("\n[AUTO] Reconsulta PIX detectada: Respondendo '1' (SIM).");
                             respostaAuto = "1";
-                        }
-                        // CASO 2: Menu "DESEJA CONSULTA-LO NOVAMENTE?" do PIX -> Responder "2" (NÃO)
-                        else */ if ((tituloUltimaMsg.contains("NOVAMENTE") || tituloUltimaMsg.contains("CONSULTA"))) {
-                            System.out.println("\n[AUTO] Reconsulta PIX detectada: Respondendo '2' (NÃO).");
-                            respostaAuto = "2";
+
+                            // ==============================================================
+                            // INJEÇÃO DA FLAG QUE EVITA O ERRO 18.
+                            // Informa ao resto do código que o fluxo do PIX entrou em modo de
+                            // consulta e NÃO DEVE sofrer tentativa de finalização (confirmar=1).
+                            // ==============================================================
+                            camposRetornados.put("PixReconsultado", "true");
                         }
                     }
 
@@ -397,7 +392,6 @@ public class App {
                         String tamStr = String.format("%05d", respBytes.length);
                         System.arraycopy(tamStr.getBytes(), 0, tamanho, 0, tamStr.length());
                     } else {
-                        // Comportamento manual padrão
                         System.out.printf("MENU: %s%nSua opção: ", valorAtual.replace(";", " | "));
                         String escolhaMenu = scanner.nextLine();
                         java.util.Arrays.fill(valor, (byte)0);
@@ -429,7 +423,6 @@ public class App {
     }
 
     // ================= MÉTODOS AUXILIARES (Requests) =================
-    // (Mantidos sem alterações na lógica, apenas inclusos para completude)
 
     private static TransactionRequest criarRequestPadrao(CodigoOperacao operacao, String docFiscal) {
         System.out.printf("\n--- %s ---%n", operacao.name());
@@ -437,9 +430,6 @@ public class App {
         TransactionRequest req = new TransactionRequest();
         req.setOperacao(operacao);
         req.setValor(valor);
-        //req.setDocumentoFiscal(docFiscal); //Este campo é opcional, nee possível de customizar pela AC o número do documento, ele é diferente do NSUCTF.
-        //NSUCTF gerado pelo próprio servidor TEF(CTF)
-        //Registro da operação gerenciado pela AC
         return req;
     }
 
@@ -451,7 +441,6 @@ public class App {
         req.setOperacao(operacao);
         req.setValor(valor);
         req.setNumeroParcelas(parcelas);
-        //req.setDocumentoFiscal(docFiscal);
         return req;
     }
 
@@ -465,7 +454,6 @@ public class App {
         TransactionRequest req = new TransactionRequest();
         req.setOperacao(CodigoOperacao.CreditoDigitado);
         req.setValor(valor);
-        //req.setDocumentoFiscal(docFiscal);
         req.setNumeroCartao(cartao);
         req.setVencimentoCartao(validade);
         return req;
@@ -481,7 +469,6 @@ public class App {
         TransactionRequest req = new TransactionRequest();
         req.setOperacao(CodigoOperacao.ConsultaPix);
         req.setValor(valorOriginal);
-        //req.setDocumentoFiscal(docFiscal);
         req.setNsuOriginal(nsuOriginal);
         req.setDataOriginal(dataOriginal);
         return req;
@@ -496,7 +483,6 @@ public class App {
         req.setDataOriginal(scanner.nextLine());
         System.out.print("Digite o NSU CTF original da transação: ");
         req.setNsuOriginal(scanner.nextLine());
-        //req.setDocumentoFiscal("CANCELAMENTO GENERICO-" ;
         return req;
     }
 
@@ -511,7 +497,6 @@ public class App {
         req.setNsuOriginal(scanner.nextLine());
         System.out.print("Digite o NÚMERO DO CARTÃO original: ");
         req.setNumeroCartao(scanner.nextLine());
-        //req.setDocumentoFiscal("CANC-DIG-" + System.currentTimeMillis());
         return req;
     }
 
@@ -524,7 +509,6 @@ public class App {
         req.setDataOriginal(scanner.nextLine());
         System.out.print("Digite o NSU CTF da transação PIX original: ");
         req.setNsuOriginal(scanner.nextLine());
-        //req.setDocumentoFiscal("DEV-PIX-" + System.currentTimeMillis());
         return req;
     }
 
@@ -533,7 +517,6 @@ public class App {
         TransactionRequest req = new TransactionRequest();
         req.setOperacao(CodigoOperacao.ReimpressaoUltimoComprovante);
         req.setValor(BigDecimal.ZERO);
-        //req.setDocumentoFiscal("REIMPRESSAO");
         return req;
     }
 
@@ -542,7 +525,6 @@ public class App {
         TransactionRequest req = new TransactionRequest();
         req.setOperacao(CodigoOperacao.ConfiguracaoCtfClient);
         req.setValor(BigDecimal.ZERO);
-        //req.setDocumentoFiscal("CONFIG CTFCLIENT-" + 1);
         return req;
     }
 
@@ -551,9 +533,6 @@ public class App {
         TransactionRequest req = new TransactionRequest();
         req.setOperacao(CodigoOperacao.AutenticacaoTerminal);
         req.setValor(BigDecimal.ZERO);
-
-        //É possível definir no númerno de documento fiscal, para controle da AC, algo personalizavel .
-        //req.setDocumentoFiscal("AUTENTICACAO-");
         return req;
     }
 
@@ -586,12 +565,17 @@ public class App {
 
     private static TransactionResponse criarResposta(Map<String, String> campos) {
         String codRetorno = Helpers.getValueOrDefault(campos, String.valueOf(Subcampo.CodigoRetornoTransacao.valor));
+        String codErro = Helpers.getValueOrDefault(campos, String.valueOf(Subcampo.CodigoErro.valor));
+
+        boolean isAprovada = "00".equals(codRetorno) && (codErro == null || codErro.trim().isEmpty() || "0000".equals(codErro));
+
         TransactionResponse response = new TransactionResponse();
-        response.setAprovada("00".equals(codRetorno));
+        response.setAprovada(isAprovada);
         response.setCodigoRetorno(codRetorno != null ? codRetorno : "ERRO");
-        response.setCodigoErro(Helpers.getValueOrDefault(campos, String.valueOf(Subcampo.CodigoErro.valor)));
-        response.setMensagemRetorno(response.isAprovada() ? "Transação Aprovada" : "Transação Negada/Erro");
+        response.setCodigoErro(codErro);
+        response.setMensagemRetorno(isAprovada ? "Transação Aprovada" : "Transação Negada/Pendente");
         response.setCamposRetornados(campos);
+
         return response;
     }
 
@@ -639,7 +623,6 @@ public class App {
 
             TransactionRequest req = new TransactionRequest();
             req.setValor(valorPagamento);
-            //req.setDocumentoFiscal(docFiscal);
 
             switch (escolha) {
                 case "1": req.setOperacao(CodigoOperacao.Credito); return req;

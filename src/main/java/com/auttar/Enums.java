@@ -17,6 +17,7 @@ public class Enums {
     public enum Subcampo {
         // Códigos oficiais de Retorno (Saída)
         CodigoRetornoTransacao(7000),
+        CodigoOperacao(7002),
         CodigoTransacao(7001),
         ValorTransacao(7005),
         NumeroCartao(7006),
