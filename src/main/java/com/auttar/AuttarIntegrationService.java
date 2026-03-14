@@ -7,37 +7,54 @@ import java.util.Map;
 import com.auttar.Enums.*;
 
 /**
- * Camada de Serviço que encapsula a lógica de comunicação com a CtfClientLibrary.
- * Ela serve como um intermediário, simplificando as chamadas que a camada de apresentação (App.java) precisa fazer.
+ * 🏗️ Camada de Serviço de Integração Auttar (Padrão Facade / Wrapper)
+ * * Qual o objetivo desta classe?
+ * Isolar toda a complexidade de comunicação de baixo nível com a DLL em C++ (JNA)
+ * da lógica de negócios e interface do usuário (App.java).
+ * * Ela atua como um "tradutor": recebe Objetos Java (TransactionRequest),
+ * converte para os formatos primitivos exigidos pela DLL (String formatada, byte arrays),
+ * executa as chamadas nativas e devolve os resultados de forma limpa.
  */
 public class AuttarIntegrationService {
-    private final String dataFiscal; // Data fiscal da operação, definida uma vez na inicialização do serviço.
+
+    // A data fiscal é o "dia útil" do caixa. Na Auttar, operações do mesmo dia
+    // precisam compartilhar a mesma data fiscal para facilitar fechamentos e conciliações.
+    private final String dataFiscal;
 
     public AuttarIntegrationService() {
+        // Inicializa a data no momento em que o serviço é instanciado.
         this.dataFiscal = Helpers.getDataAtual();
     }
 
     /**
-     * Inicializa o cliente TEF (CTFClient). Esta função deve ser chamada uma vez no início da aplicação.
-     * @return true se a inicialização for bem-sucedida, false caso contrário.
+     * 🔌 Inicializa o cliente TEF (Handshake inicial).
+     * * É obrigatório chamar este método UMA VEZ ao abrir o PDV, antes de qualquer transação.
+     * Ele carrega configurações, sobe os serviços de comunicação e valida as chaves de segurança.
+     * * @return true se a DLL inicializou corretamente e está pronta para uso; false em caso de falha.
      */
     public boolean inicializarCliente() {
+        // No JNA (comunicação com C/C++), nós alocamos a memória no Java (array de 256 bytes)
+        // e passamos o ponteiro para a DLL preencher a resposta dentro dele.
         byte[] resultado = new byte[256];
         java.util.Arrays.fill(resultado, (byte) ' ');
-        // Preenche o buffer de resultado com "00" para indicar sucesso inicial, a DLL pode sobrescrever.
+
+        // Enviamos "00" de antemão. Se a DLL não alterar isso e não estourar erro, assumimos sucesso.
         System.arraycopy("00".getBytes(), 0, resultado, 0, 2);
 
-        // Parâmetros de configuração para a DLL. "[suporte-https=1]" habilita comunicação segura.
+        // String de inicialização estendida.
+        // "[suporte-https=1]" é crucial hoje em dia, pois obriga a comunicação encriptada via TLS com a Auttar.
         String strParametros = "[suporte-https=1]";
 
         try {
             System.out.println("INFO: Chamando iniciaClientCTF...");
-            // Chama a função nativa através da interface JNA.
+
+            // Assinatura nativa: (buffer_resultado, cnpj, versao_automacao, nome_automacao, param_adicionais...)
             CtfClientLibrary.INSTANCE.iniciaClientCTF(resultado, "000000000000", "1.0.0", "PDV_JAVA",
                     "00", "HTTPS", "0", "1", "1", strParametros);
 
-            // Converte a resposta do buffer de bytes para String e verifica o resultado.
+            // Transforma os bytes devolvidos pela DLL nativa de volta para String legível no Java
             String resposta = new String(resultado, StandardCharsets.UTF_8).trim();
+
             if ("00".equals(resposta)) {
                 System.out.println("SUCESSO: CTFClient inicializado com sucesso.");
                 return true;
@@ -46,47 +63,52 @@ public class AuttarIntegrationService {
                 return false;
             }
         } catch (Exception ex) {
-            System.out.println("ERRO FATAL durante a inicialização: " + ex.getMessage());
+            System.out.println("ERRO FATAL durante a inicialização: Verifique se a arquitetura (x86/x64) do Java bate com a DLL.");
             ex.printStackTrace();
             return false;
         }
     }
 
     /**
-     * Inicia uma transação TEF, seja ela uma venda, cancelamento, etc.
-     * @param request Objeto contendo todos os dados da transação a ser iniciada.
-     * @param numTrans Número sequencial da transação no dia.
-     * @return O código de retorno da função da DLL.
+     * 🚀 Dá o "Start" em uma nova operação (Venda, Cancelamento, Reimpressão).
+     * * @param request Objeto estruturado contendo operação, valor e identificadores.
+     * @param numTrans Número sequencial da transação no dia (ex: "01", "02").
+     * @return O código de status da inicialização. (0 = Sucesso, prosseguir para o loop).
      */
     public int iniciarTransacao(TransactionRequest request, String numTrans) {
         byte[] resultado = new byte[256];
-        // Formata os dados do objeto Request para as strings esperadas pela DLL.
+
+        // A DLL exige formatações rígidas (ex: operação sempre com 3 dígitos,
+        // e documento fiscal alinhado à esquerda com 20 posições).
         String operacaoStr = String.format("%03d", request.getOperacao().valor);
         String valorStr = Helpers.formataValor(request.getValor());
         String docFiscalStr = String.format("%-20s", request.getDocumentoFiscal() != null ? request.getDocumentoFiscal() : "");
 
-        // Verifica se a operação requer dados estendidos (ex: cancelamento, crédito digitado, parcelamento).
+        // Valida se a transação exige a passagem de um "pacote de dados extras" (Dados Estendidos)
         String dadosExt = construirDadosEstendidos(request);
 
         if (dadosExt.isEmpty()) {
-            // Chama a função padrão se não houver dados estendidos.
+            // Operações simples (Crédito comum, Débito comum) que não precisam de dados extras.
             CtfClientLibrary.INSTANCE.iniciaTransacaoCTF(resultado, operacaoStr, valorStr, docFiscalStr, dataFiscal, numTrans);
         } else {
-            // Chama a função estendida ('ext') se houver dados adicionais.
+            // Operações complexas (Parcelado, PIX, Cancelamento) usam a versão 'ext' (Extended) da função,
+            // que aceita o parâmetro extra contendo a string de subcampos.
             CtfClientLibrary.INSTANCE.iniciaTransacaoCTFext(resultado, operacaoStr, valorStr, docFiscalStr, dataFiscal, numTrans, dadosExt);
         }
-        // Retorna o código de status da chamada.
+
         return Integer.parseInt(new String(resultado).trim());
     }
 
     /**
-     * Continua uma transação interativa. Esta função é chamada em um loop até que a transação termine.
-     * @param comando Buffer que envia/recebe o comando a ser executado.
-     * @param campo Buffer que envia/recebe o campo relacionado ao comando.
-     * @param valor Buffer que envia/recebe o valor relacionado ao comando.
-     * @param tamanho Buffer que envia/recebe o tamanho do valor.
-     * @param display Buffer que recebe mensagens a serem exibidas no PDV.
-     * @return O código de retorno da função, tipicamente 99 (AguardandoContinuação) ou 0 (Sucesso).
+     * 🔄 O "Coração" do TEF (Loop de Continuação).
+     * * A integração Auttar funciona como uma "Máquina de Estados". Após o 'iniciarTransacao',
+     * o PDV deve chamar esta função repetidamente num loop (while) até que ela pare de retornar '99'.
+     * * @param comando O que a DLL quer que o PDV faça (ex: "01" exibir mensagem, "05" exibir menu).
+     * @param campo O ID da informação que está sendo trafegada (ex: "7000" para status, "7302" para cupom).
+     * @param valor O conteúdo da informação (ex: "Transação Aprovada", ou os dados do cupom).
+     * @param tamanho Quantidade de caracteres presentes no buffer 'valor'.
+     * @param display Mensagens curtas enviadas paralelamente para exibir em visor de cliente (se houver).
+     * @return 99 (Continue rodando o loop), 0 (Operação concluída com sucesso), ou -1 (Erro e fim de loop).
      */
     public int continuarTransacao(byte[] comando, byte[] campo, byte[] valor, byte[] tamanho, byte[] display) {
         byte[] resultado = new byte[256];
@@ -95,62 +117,79 @@ public class AuttarIntegrationService {
     }
 
     /**
-     * Finaliza uma transação, confirmando-a (commit) ou desfazendo-a (rollback).
-     * @param confirmar "1" para confirmar, "0" para desfazer.
-     * @param numTrans O número da transação a ser finalizada.
-     * @param camposRetornados Mapa para armazenar o resultado da finalização.
+     * 🏁 Efetivação (Commit) ou Desfazimento (Rollback) da transação.
+     * * Fundamental para garantir a integridade financeira. Só chamamos o Confirmar ("1")
+     * DEPOIS que o PDV imprimiu o cupom ou registrou a venda no banco de dados local.
+     * Caso o PDV caia, falte papel ou dê timeout no PIX, manda-se o Desfazer ("0").
+     * * @param confirmar "1" = Transação validada e retida. "0" = Transação cancelada/estornada automaticamente.
+     * @param numTrans O número sequencial da transação que está sendo finalizada.
+     * @param camposRetornados Coleção do Java para guardarmos o log/resultado desta função.
      */
     public void finalizarTransacao(String confirmar, String numTrans, Map<String, String> camposRetornados) {
         byte[] resultado = new byte[256];
         CtfClientLibrary.INSTANCE.finalizaTransacaoCTF(resultado, confirmar, numTrans, dataFiscal);
+
+        // Salva a resposta da dll (ex: "0", "00" ou "18") dentro do nosso dicionário
+        // para auditoria ou prevenção de Erro 18 na camada de UI.
         camposRetornados.put("ResultadoFinalizacao", new String(resultado).trim());
     }
 
     /**
-     * Constrói a string de dados estendidos no formato "[chave1=valor1;chave2=valor2]".
-     * @param request O objeto de requisição da transação.
-     * @return A string formatada ou uma string vazia se não houver dados estendidos.
+     * 🧩 Serializador de Dados Estendidos.
+     * * O padrão da Auttar para enviar múltiplas informações extras é uma string única
+     * delimitada por colchetes e ponto-e-vírgula. Formato: "[ID=VALOR;ID2=VALOR2]".
+     * Exemplo de Cancelamento: "[7012=123456;7161=251224]".
+     * * @param request O objeto gerado pela interface com os dados informados pelo operador.
+     * @return String formatada e pronta para injeção na DLL nativa.
      */
     private String construirDadosEstendidos(TransactionRequest request) {
         List<String> dados = new ArrayList<>();
-        if (request == null) return ""; // Proteção
+        if (request == null) return ""; // Proteção contra NullPointer
 
-        // Adiciona o número de parcelas (7008) se ele foi definido
+        // REGRA GLOBAL: Se houver parcelamento, a DLL sempre exige o subcampo 7008
         if (request.getNumeroParcelas() != null && request.getNumeroParcelas() > 0) {
-            // Formata o número de parcelas com 2 dígitos (ex: "03", "12")
+            // Garante que fique com duas posições (ex: "03" ou "12" parcelas)
             dados.add(String.valueOf(Subcampo.NumeroParcelas.valor) + "=" + String.format("%02d", request.getNumeroParcelas()));
         }
 
         if (request.getOperacao() == null) {
-            // Retorna apenas os dados de parcela se a operação for nula
             return dados.isEmpty() ? "" : "[" + String.join(";", dados) + "]";
         }
 
-        // Monta a lista de pares chave=valor de acordo com o tipo de operação.
+        // 🔀 Análise de Requisitos Específicos por Tipo de Operação
         switch (request.getOperacao()) {
-            case ConsultaPix: case CancelamentoGenerico: case DevolucaoPix:
+            case ConsultaPix:
+            case CancelamentoGenerico:
+            case DevolucaoPix:
+                // Para reconsultar ou estornar algo, a Auttar precisa saber o "RG" (NSU) e a Data da operação original.
                 if (request.getNsuOriginal() != null) dados.add(Subcampo.NsuCtfOriginal.valor + "=" + request.getNsuOriginal());
                 if (request.getDataOriginal() != null) dados.add(Subcampo.DataTransacaoOriginal.valor + "=" + request.getDataOriginal());
                 break;
+
             case CancelamentoCreditoDigitado:
+                // Estornos de crédito digitado exigem os dados da venda original + o número do cartão para bater a segurança.
                 if (request.getNsuOriginal() != null) dados.add(Subcampo.NsuCtfOriginal.valor + "=" + request.getNsuOriginal());
                 if (request.getDataOriginal() != null) dados.add(Subcampo.DataTransacaoOriginal.valor + "=" + request.getDataOriginal());
                 if (request.getNumeroCartao() != null) dados.add(Subcampo.NumeroCartao.valor + "=" + request.getNumeroCartao());
                 break;
+
             case CreditoDigitado:
+                // Venda sem o cartão físico em mãos (venda por telefone/e-commerce manual).
                 if (request.getNumeroCartao() != null) dados.add(Subcampo.NumeroCartao.valor + "=" + request.getNumeroCartao());
                 if (request.getVencimentoCartao() != null) dados.add(Subcampo.VencimentoCartao.valor + "=" + request.getVencimentoCartao());
                 break;
 
             case CreditoParceladoComJuros:
             case CreditoParceladoSemJuros:
-                // O número de parcelas já foi adicionado no bloco acima.
-                // Nenhum outro dado estendido é necessário para esta operação.
+                // Tratado na regra global de parcelamento acima.
+                // Apenas deixamos o case aqui de forma explícita para clareza da regra de negócio.
                 break;
 
-            default: break;
+            default:
+                break;
         }
-        // Junta a lista em uma única string, se não estiver vazia.
+
+        // Empacota a lista na sintaxe exigida pela Auttar: "[chave=valor;chave2=valor2]"
         return dados.isEmpty() ? "" : "[" + String.join(";", dados) + "]";
     }
 }

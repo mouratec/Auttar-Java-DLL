@@ -11,27 +11,37 @@ import java.util.Scanner;
 
 /**
  * 🚀 **Classe Principal da Aplicação (Ponto de Entrada)**
- * Versão atualizada:
- * 1. Timeout gerenciado pelo Pinpad/CTF.
- * 2. Devolução/Consulta PIX sem confirmação final ("1").
- * 3. Auto-resposta "1" (SIM) para reconsulta PIX.
- * 4. Proteção contra o Erro 18 (Transação já finalizada) no PIX.
+ * Interface de console (PDV modelo) que orquestra as vendas e a comunicação com a DLL da Auttar.
+ * * DESTAQUES DE ARQUITETURA NESTA VERSÃO:
+ * 1. Timeout Inteligente: O tempo do PIX é ditado pela adquirente/DLL, e não por timers no Java.
+ * 2. Eco de Comandos: Impede o Erro 5331 respondendo corretamente aos comandos de tela.
+ * 3. Trava de Finalização (Anti-Erro 18): Impede que o PDV tente "desfazer" um PIX já morto pela DLL.
  */
 public class App {
 
     private static final Scanner scanner = new Scanner(System.in, "UTF-8");
+
+    // Tamanho seguro para receber dados extensos da Auttar, como imagens em Base64 ou cupons longos.
     private static final int BUFFER_SIZE = 99000;
 
-    // Armazena a última mensagem/título exibido para contexto do menu
+    // Memória temporária para armazenar o contexto do último menu exibido pela DLL.
+    // Usado pela inteligência de Auto-Resposta (ex: saber que estamos na tela de timeout do PIX).
     private static String ultimaMensagemDisplay = "";
 
     public static void main(String[] args) {
+
+        //  CONFIGURAÇÕES GLOBAIS DO JNA (Multiplataforma)
+        System.setProperty("jna.library.path", ".");
+        System.setProperty("jna.nosys", "true");
+
         System.out.println("======================================");
         System.out.println("=   Sistema de Integração Auttar     =");
         System.out.println("======================================\n");
 
         AuttarIntegrationService auttarService = new AuttarIntegrationService();
 
+        // Tenta acionar a função iniciaClientCTF. Se falhar (ex: DLL ausente, Java em arquitetura errada),
+        // o programa é abortado antes de exibir o menu.
         if (!auttarService.inicializarCliente()) {
             System.out.println("\nPressione Enter para sair...");
             scanner.nextLine();
@@ -43,6 +53,10 @@ public class App {
         System.out.println("Encerrando o programa...");
         scanner.close();
     }
+
+    // =========================================================================
+    // 🖥️ CAMADA DE APRESENTAÇÃO (MENUS DO SISTEMA)
+    // =========================================================================
 
     private static boolean handleMainMenu(AuttarIntegrationService service) {
         System.out.println("\n==========================================");
@@ -94,6 +108,8 @@ public class App {
             System.out.print("\nOpcao: ");
             String escolha = scanner.nextLine();
             TransactionRequest request = null;
+
+            // Opcional: Aqui poderíamos gerar um número de cupom fiscal real vindo de um ERP.
             String docFiscal = null;
 
             switch (escolha) {
@@ -110,6 +126,7 @@ public class App {
                 case "0": return;
                 default: System.out.println("Opção inválida."); break;
             }
+
             if (request != null) {
                 executarFluxoDeTransacao(service, request, "01");
             }
@@ -117,6 +134,7 @@ public class App {
     }
 
     private static void handleCancelamentoMenu(AuttarIntegrationService service) {
+        // Fluxos de cancelamento exigem coletar a "Data" e o "NSU" da transação original.
         while (true) {
             System.out.println("\n------------------------------------------");
             System.out.println("           MENU DE CANCELAMENTO         ");
@@ -141,36 +159,56 @@ public class App {
         }
     }
 
-    private static void executarFluxoDeTransacao(AuttarIntegrationService service, TransactionRequest request, String numTrans) {
-        Map<String, String> camposRetornados = new HashMap<>();
-        ultimaMensagemDisplay = ""; // Reseta mensagem anterior
+    // =========================================================================
+    // ⚙️ CAMADA CORE: GERENCIADOR DE TRANSAÇÕES
+    // =========================================================================
 
+    /**
+     * Motor principal que gerencia o ciclo de vida de UMA transação (Inicialização -> Loop -> Finalização).
+     */
+    private static void executarFluxoDeTransacao(AuttarIntegrationService service, TransactionRequest request, String numTrans) {
+        // Dicionário usado para acumular todos os dados (Subcampos) que a DLL nos devolver ao longo do fluxo.
+        Map<String, String> camposRetornados = new HashMap<>();
+        ultimaMensagemDisplay = "";
+
+        // 1. DÁ O "START" NA TRANSAÇÃO
         int ret = service.iniciarTransacao(request, numTrans);
         if (ret != CodigoRetornoFuncao.Sucesso.valor) {
             exibirResultado(request, criarRespostaDeErro("Falha ao iniciar a transação. Código: " + ret, null), numTrans);
             return;
         }
 
+        // Buffers passados por referência para a DLL ler e escrever comandos e textos de tela.
         byte[] comando = new byte[256], campo = new byte[256], valor = new byte[BUFFER_SIZE],
                 tamanho = new byte[256], display = new byte[256];
+
+        // O primeiro comando para entrar no loop deve ser sempre "00" (Avançar/Prosseguir).
         System.arraycopy("00".getBytes(), 0, comando, 0, 2);
 
+        // 2. LOOP DE CONTINUAÇÃO (A MÁQUINA DE ESTADOS)
+        // Enquanto a DLL responder '99' (Aguardando), significa que o fluxo ainda não acabou.
         ret = CodigoRetornoFuncao.AguardandoContinuacao.valor;
         while (ret == CodigoRetornoFuncao.AguardandoContinuacao.valor) {
             ret = service.continuarTransacao(comando, campo, valor, tamanho, display);
             if (ret == CodigoRetornoFuncao.AguardandoContinuacao.valor) {
+                // Passa a bola para o método que vai ler o comando da DLL e reagir de acordo.
                 tratarComandoInterativo(comando, campo, valor, tamanho, display, camposRetornados, request);
             }
         }
 
+        // 3. AVALIA O RESULTADO (Aprovada, Negada, Cancelada)
         TransactionResponse response = criarResposta(camposRetornados);
         response.setOperacaoRequest(request);
 
+        // Se a transação abortou no meio do caminho (cancelada no pinpad, falta de rede, etc).
         if (ret != CodigoRetornoFuncao.Sucesso.valor) {
-            // TRAVA 1 CONTRA O ERRO 18: Timeout (10) e Falhas no PIX não exigem rollback "0".
+            // TRAVA 1 CONTRA ERRO 18:
+            // O retorno 10 (Timeout do servidor) ou falhas no Pagamento PIX NÃO exigem o rollback "0",
+            // pois o servidor da Auttar destrói essas transações internamente. Tentar desfazer causa Erro 18.
             if (ret != 10 && request.getOperacao() != CodigoOperacao.PagamentoPix) {
                 service.finalizarTransacao("0", numTrans, camposRetornados);
             }
+
             String msg = "Erro/Cancelamento durante o processamento. Código: " + ret;
             if (response.getMensagemRetorno().contains("Cancelado")) {
                 msg = "Transação Cancelada (Timeout ou Usuário).";
@@ -179,6 +217,9 @@ public class App {
             return;
         }
 
+        // Recupera o código REAL da operação que foi processada (Subcampo 7002).
+        // Isso é vital porque, em caso de Timeout, a intenção original de "Pagamento PIX" (422)
+        // pode ter se transformado em "Consulta PIX" (423) sob os panos pela própria DLL.
         int codOperacaoReal = request.getOperacao().valor;
         String codOperacaoFinalStr = camposRetornados.get(String.valueOf(Subcampo.CodigoOperacao.valor));
 
@@ -188,6 +229,8 @@ public class App {
             } catch (NumberFormatException ignored) {}
         }
 
+        // Verifica se a operação concluída é passível de Confirmação Final.
+        // Operações administrativas, consultas e estornos de PIX não usam finalizaTransacao.
         boolean precisaFinalizar =
                 codOperacaoReal != CodigoOperacao.ConsultaPix.valor &&
                         codOperacaoReal != CodigoOperacao.DevolucaoPix.valor &&
@@ -195,12 +238,10 @@ public class App {
                         codOperacaoReal != CodigoOperacao.ConfiguracaoCtfClient.valor &&
                         codOperacaoReal != CodigoOperacao.AutenticacaoTerminal.valor;
 
-        // =======================================================================
-        // TRAVA 2 CONTRA O ERRO 18 NO FLUXO PIX:
-        // Lemos a Flag que foi injetada no `tratarComandoInterativo`.
-        // Se ocorreu a tela de reconsulta, a DLL já encerrou o processo e não
-        // aceitará FinalizaTransacao, independentemente se aprovou ou não.
-        // =======================================================================
+        // TRAVA 2 CONTRA ERRO 18 NO PIX:
+        // Lemos a Flag que foi injetada no `tratarComandoInterativo` durante o timeout do PIX.
+        // Se ocorreu a tela de reconsulta e a venda não foi paga, a DLL já encerrou o processo e não
+        // aceitará um FinalizaTransacao("0").
         boolean pixReconsultado = "true".equals(camposRetornados.get("PixReconsultado"));
 
         if (codOperacaoReal == CodigoOperacao.PagamentoPix.valor) {
@@ -209,14 +250,20 @@ public class App {
             }
         }
 
+        // 4. O COMMIT / ROLLBACK (Aperto de mãos final)
         if (precisaFinalizar) {
             String confirmar = response.isAprovada() ? "1" : "0";
             service.finalizarTransacao(confirmar, numTrans, camposRetornados);
         }
 
+        // 5. EXIBE RESULTADO NA TELA DO CAIXA
         exibirResultado(request, response, numTrans);
     }
 
+    /**
+     * Versão enxuta do `executarFluxoDeTransacao`, projetada para retornar o objeto TransactionResponse
+     * diretamente para a rotina de Multiplos Cartões acumular os sucessos.
+     */
     private static TransactionResponse executarTransacaoParcial(AuttarIntegrationService service, TransactionRequest request, int numeroTransacao) {
         String numTransStr = String.format("%02d", numeroTransacao);
         Map<String, String> camposRetornados = new HashMap<>();
@@ -249,6 +296,10 @@ public class App {
         return response;
     }
 
+    /**
+     * Permite passar cartões diferentes até atingir o total da venda.
+     * Se o cliente desistir no meio, as transações anteriores são estornadas via rollback ("0").
+     */
     private static void handleVendaMultiplosCartoes(AuttarIntegrationService service, String docFiscalDaVenda) {
         System.out.println("\n--- VENDA COM MÚLTIPLOS CARTÕES ---");
         BigDecimal valorTotal = obterValorDaTransacao();
@@ -282,6 +333,7 @@ public class App {
                     String escolha = scanner.nextLine().trim().toUpperCase();
 
                     if (escolha.startsWith("C")) {
+                        // ROLLBACK GERAL: Cancela no servidor tudo que havia sido pré-aprovado nesta compra.
                         if (!transacoesAprovadas.isEmpty()) {
                             service.finalizarTransacao("0", "01", new HashMap<>());
                             System.out.println("\nVENDA CANCELADA PELO UTILIZADOR. TRANSAÇÕES APROVADAS FORAM DESFEITAS.");
@@ -298,6 +350,7 @@ public class App {
             }
         }
 
+        // CONFIRMAÇÃO GERAL: Se chegou aqui, a venda foi 100% quitada. É seguro confirmar.
         if (valorPendente.compareTo(new BigDecimal("0.005")) < 0 && !transacoesAprovadas.isEmpty()) {
             System.out.println("\n--- FINALIZANDO VENDA ---");
             System.out.println("Venda totalmente paga. Confirmar todos os pagamentos? (S/N)");
@@ -325,8 +378,13 @@ public class App {
         }
     }
 
+    // =========================================================================
+    // 🧠 INTELIGÊNCIA E MANIPULAÇÃO DE TELA
+    // =========================================================================
+
     /**
-     * 💬 **Processa os comandos interativos da DLL.**
+     * Analisa o comando requisitado pela DLL (Ex: Mostrar Msg, Menu, Digitar Senha)
+     * e prepara a resposta correta nos buffers de C++ (JNA) para a próxima iteração.
      */
     private static void tratarComandoInterativo(byte[] comando, byte[] campo, byte[] valor, byte[] tamanho, byte[] display, Map<String, String> camposRetornados, TransactionRequest request) {
         String comandoStr = new String(comando, StandardCharsets.UTF_8).trim();
@@ -343,13 +401,15 @@ public class App {
         try { valorTamanho = Integer.parseInt(tamanhoStr); } catch (Exception e) {}
         String valorAtual = new String(valor, 0, valorTamanho, StandardCharsets.UTF_8);
 
-        // CORREÇÃO DOS ERROS 5317 E 5331 (CT02):
-        // Sempre devolver o próprio comando recebido como Eco para a DLL.
+        // CORREÇÃO DOS ERROS 5317 E 5331 (CT02): A REGRA DO ECO
+        // A DLL exige um "eco" (Acknowledge) para comandos visuais/de controle.
+        // Forçar "00" em comandos como "Limpar Tela (03)" quebra a sincronia. O correto é ecoar.
         String comandoParaProximaChamada = comandoStr;
 
         if (cmd != null) {
             switch (cmd) {
                 case ObterSubcampo:
+                    // Quando a DLL tiver dados prontos (ex: NSU, Códigos, Comprovantes), nós guardamos no Map.
                     camposRetornados.put(campoStr.substring(0, 4), valorAtual);
                     break;
 
@@ -369,22 +429,21 @@ public class App {
 
                     String respostaAuto = null;
 
+                    // INTELIGÊNCIA DE RESPOSTA AUTOMÁTICA (AUTO-RESPONDER)
                     if (isSimNao) {
-                        // Quando a tela de timeout aparecer, injetamos uma FLAG no mapa
+                        // Trata o Timeout nativo do PIX perguntando se deseja reconsultar o status.
                         if ((tituloUltimaMsg.contains("NOVAMENTE") || tituloUltimaMsg.contains("CONSULTA"))) {
                             System.out.println("\n[AUTO] Reconsulta PIX detectada: Respondendo '1' (SIM).");
                             respostaAuto = "1";
 
-                            // ==============================================================
-                            // INJEÇÃO DA FLAG QUE EVITA O ERRO 18.
-                            // Informa ao resto do código que o fluxo do PIX entrou em modo de
-                            // consulta e NÃO DEVE sofrer tentativa de finalização (confirmar=1).
-                            // ==============================================================
+                            // FLAG ANTI-ERRO 18: Informa ao 'executarFluxoDeTransacao' que o PIX entrou em
+                            // modo de reconsulta nativa e, portanto, NÃO DEVE sofrer 'finalizaTransacao'.
                             camposRetornados.put("PixReconsultado", "true");
                         }
                     }
 
                     if (respostaAuto != null) {
+                        // Aplica a resposta automática preenchendo os arrays JNA
                         java.util.Arrays.fill(valor, (byte)0);
                         java.util.Arrays.fill(tamanho, (byte)0);
                         byte[] respBytes = respostaAuto.getBytes();
@@ -392,6 +451,7 @@ public class App {
                         String tamStr = String.format("%05d", respBytes.length);
                         System.arraycopy(tamStr.getBytes(), 0, tamanho, 0, tamStr.length());
                     } else {
+                        // Caso seja um menu genérico, pede pro Caixa digitar a opção.
                         System.out.printf("MENU: %s%nSua opção: ", valorAtual.replace(";", " | "));
                         String escolhaMenu = scanner.nextLine();
                         java.util.Arrays.fill(valor, (byte)0);
@@ -401,28 +461,35 @@ public class App {
                         String tamStr = String.format("%05d", escolhaBytes.length);
                         System.arraycopy(tamStr.getBytes(), 0, tamanho, 0, tamStr.length());
                     }
-                    comandoParaProximaChamada = "05";
+                    comandoParaProximaChamada = "05"; // Comando: "Opção de Menu Selecionada"
                     break;
 
                 case CapturarDado:
                     System.out.print(valorAtual + ": ");
                     String dadoCapturado = scanner.nextLine();
+
+                    // Limpeza explícita do buffer (vital no JNA/Java para não sujar variáveis nativas)
                     java.util.Arrays.fill(valor, (byte)0);
                     java.util.Arrays.fill(tamanho, (byte)0);
+
                     byte[] dadoBytes = dadoCapturado.getBytes();
                     System.arraycopy(dadoBytes, 0, valor, 0, dadoBytes.length);
                     String tamDadoStr = String.format("%05d", dadoBytes.length);
                     System.arraycopy(tamDadoStr.getBytes(), 0, tamanho, 0, tamDadoStr.length());
-                    comandoParaProximaChamada = "07";
+                    comandoParaProximaChamada = "07"; // Comando: "Dado Capturado Enviado"
                     break;
                 default: break;
             }
         }
+
+        // Insere o código que o Java definiu (Ex: 00, 05, 03) no array 'comando' que vai pra DLL na próxima rodada.
         java.util.Arrays.fill(comando, (byte)0);
         System.arraycopy(comandoParaProximaChamada.getBytes(), 0, comando, 0, comandoParaProximaChamada.length());
     }
 
-    // ================= MÉTODOS AUXILIARES (Requests) =================
+    // =========================================================================
+    // 🧰 MÉTODOS AUXILIARES: CONSTRUÇÃO DE REQUISIÇÕES
+    // =========================================================================
 
     private static TransactionRequest criarRequestPadrao(CodigoOperacao operacao, String docFiscal) {
         System.out.printf("\n--- %s ---%n", operacao.name());
@@ -536,6 +603,10 @@ public class App {
         return req;
     }
 
+    // =========================================================================
+    // 🧮 FORMATAÇÕES E COLETA DE INFORMAÇÃO BÁSICA
+    // =========================================================================
+
     private static BigDecimal obterValorDaTransacao() {
         while (true) {
             System.out.print("\nDigite o valor da transação (ex: 19,99): R$ ");
@@ -563,10 +634,16 @@ public class App {
         }
     }
 
+    /**
+     * Avalia os dados devolvidos pela DLL (no Map) para definir se a transação
+     * foi Aprovada Financeiramente ou se foi Negada/Abortada.
+     */
     private static TransactionResponse criarResposta(Map<String, String> campos) {
         String codRetorno = Helpers.getValueOrDefault(campos, String.valueOf(Subcampo.CodigoRetornoTransacao.valor));
         String codErro = Helpers.getValueOrDefault(campos, String.valueOf(Subcampo.CodigoErro.valor));
 
+        // CORREÇÃO PIX: Para barrar o "Falso Positivo", a aprovação exige duplo-check:
+        // O código principal (7000) DEVE ser "00", e o de erro (7300) NÃO DEVE conter bloqueios.
         boolean isAprovada = "00".equals(codRetorno) && (codErro == null || codErro.trim().isEmpty() || "0000".equals(codErro));
 
         TransactionResponse response = new TransactionResponse();

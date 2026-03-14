@@ -1,14 +1,8 @@
-Aqui está uma proposta detalhada e profissional para o seu arquivo `README.md`, focada na estabilidade da integração, na arquitetura do projeto e nas soluções técnicas aplicadas (como a correção do erro de sincronia e o gerenciamento do PIX).
-
-Este documento exclui as lógicas de simulação de desligamento/perda de rede (Testes 4.0 e 4.1), mantendo o foco no núcleo de funcionamento da integração com a Auttar.
-
----
-
 # Integração Auttar TEF (CTFClient) - Java via JNA
 
-Este projeto é uma aplicação modelo de Ponto de Venda (PDV) em console construída em **Java**, que realiza a integração direta com a biblioteca nativa da Auttar (`ctfclient.dll`) utilizando **JNA (Java Native Access)**.
+Este projeto é uma aplicação modelo de Ponto de Venda (PDV) em console construída em **Java**, que realiza a integração direta com a biblioteca nativa da Auttar (`ctfclient.dll` / `libctfclient.so`) utilizando **JNA (Java Native Access)**.
 
-O objetivo deste projeto é fornecer uma arquitetura limpa, robusta e orientada a objetos para o processamento de transações TEF (Transferência Eletrônica de Fundos), gerenciando adequadamente o ciclo de vida da transação, interatividade de tela e comunicação de baixo nível com o servidor CTF.
+O objetivo deste projeto é fornecer uma arquitetura limpa, robusta e orientada a objetos para o processamento de transações TEF (Transferência Eletrônica de Fundos), gerenciando adequadamente o ciclo de vida da transação, interatividade de tela e comunicação de baixo nível com o servidor CTF em ambientes **Windows e Linux**.
 
 ## 🚀 Funcionalidades Suportadas
 
@@ -22,63 +16,43 @@ O objetivo deste projeto é fornecer uma arquitetura limpa, robusta e orientada 
 ## ⚙️ Pré-requisitos
 
 1. **Java Development Kit (JDK) 8 ou superior.**
-* ⚠️ **MUITO IMPORTANTE:** A arquitetura do seu Java (32-bit ou 64-bit) **DEVE ser exatamente a mesma** da versão da DLL `ctfclient.dll` que você está utilizando. Executar uma DLL x86 em uma JVM x64 (ou vice-versa) resultará no erro `UnsatisfiedLinkError`.
-
-
-2. **Biblioteca JNA (Java Native Access).** * Se usar Maven, adicione a dependência do `net.java.dev.jna:jna`.
+    * ⚠️ **MUITO IMPORTANTE:** A arquitetura do seu Java (32-bit ou 64-bit) **DEVE ser exatamente a mesma** da versão da biblioteca (`ctfclient.dll` ou `libctfclient.so`) que você está utilizando. Executar uma lib x86 em uma JVM x64 (ou vice-versa) resultará no erro `UnsatisfiedLinkError`.
+2. **Biblioteca JNA (Java Native Access).** * Se usar Maven, adicione a dependência `net.java.dev.jna:jna`.
 3. **Ambiente Auttar:**
-* O aplicativo CTFClient deve estar instalado no computador local.
-* A pasta contendo a DLL deve estar acessível e com as permissões corretas do sistema operacional.
-
-
+    * O aplicativo CTFClient deve estar instalado no computador local (ou executado em modo Portátil).
 
 ## 🏗️ Arquitetura do Projeto
 
 O código foi dividido em camadas lógicas para separar a apresentação da comunicação nativa:
 
-* `App.java`: Ponto de entrada da aplicação. Contém os menus de navegação, coleta os dados digitados pelo operador (valor, parcelas) e orquestra a comunicação interativa com a DLL (Loop de continuação e respostas de menu).
-* `AuttarIntegrationService.java`: Camada de serviço responsável por montar os parâmetros exigidos pela Auttar (incluindo as strings de dados estendidos `[chave=valor]`) e invocar as funções da DLL.
-* `CtfClientLibrary.java`: Interface JNA contendo a assinatura dos métodos exportados nativamente pela `ctfclient.dll` (`iniciaClientCTF`, `iniciaTransacaoCTF`, `continuaTransacaoCTF`, etc.).
-* `TransactionRequest.java` / `TransactionResponse.java`: Classes POJO para o tráfego limpo de dados de requisição e resposta entre o menu e o serviço.
-* `Enums.java`: Dicionários tipados contendo Códigos de Retorno, Códigos de Operação, Subcampos e Comandos de Tela, evitando a utilização de *Magic Numbers* no código.
-* `Helpers.java`: Funções utilitárias (formatação de valores financeiros, extração de subcampos, formatação de datas).
+* `App.java`: Ponto de entrada da aplicação. Contém os menus de navegação e orquestra a comunicação interativa.
+* `AuttarIntegrationService.java`: Camada de serviço responsável por montar os parâmetros exigidos pela Auttar e invocar as funções nativas.
+* `CtfClientLibrary.java`: Interface JNA multiplataforma contendo a assinatura dos métodos exportados nativamente.
+* `TransactionRequest.java` / `TransactionResponse.java`: Classes POJO (Plain Old Java Object) para o tráfego limpo de dados de requisição e resposta.
+* `Enums.java`: Dicionários tipados contendo Códigos de Retorno e Comandos de Tela, evitando *Magic Numbers*.
 
-## 🔧 Configuração e Instalação
+## 🔧 Configuração e Instalação da Biblioteca Nativa
 
-Antes de rodar a aplicação, é necessário apontar o caminho correto da DLL da Auttar na sua máquina.
+A interface `CtfClientLibrary.java` foi projetada para localizar a biblioteca nativa da Auttar automaticamente. A aplicação buscará a biblioteca na seguinte ordem:
 
-1. Abra o arquivo `src/main/java/com/auttar/CtfClientLibrary.java`.
-2. Localize a constante `DLL_PATH`:
-```java
-String DLL_PATH = "C:\\Caminho\\Para\\A\\Sua\\ctfclient.dll";
+1. **Via Linha de Comando (Prioridade Máxima):** ```bash
+   java -Djna.library.path=/caminho/para/sua/pasta/ -jar dll-java-2.0.jar
+   ```
+2. **Modo Portátil (Diretório Atual):** Se a biblioteca estiver na mesma pasta onde o `.jar` está sendo executado.
+3. **Padrões do Sistema Operacional:**
+    * **Windows:** `C:\Program Files (x86)\Auttar\CTFClient\bin\ctfclient.dll`
+    * **Linux:** `/opt/CTFClient/lib/libctfclient.so`
 
-```
+## 📚 Guias e Tutoriais de Infraestrutura
 
+Dependendo do seu sistema operacional e setup físico, consulte os guias detalhados na pasta `tutoriais/`:
 
-3. Altere este caminho para refletir o diretório real de instalação do CTFClient (ex: `C:\Program Files (x86)\Auttar\CTFClient\bin\ctfclient.dll` ou pasta Portable equivalente).
+* 🐧 [Configurando CTFClient x86 no Linux (Debian/Ubuntu)](tutoriais/SETUP_LINUX_X86.md)
+* 🔌 [Configurando Pinpad Gertec via regras UDEV no Linux](tutoriais/SETUP_PINPAD.md)
+* 💻 [Compartilhando USB (Pinpad) no WSL 2 do Windows](tutoriais/SETUP_WSL_USB.md)
 
-## 💡 Lições Técnicas e Comportamentos (Troubleshooting)
+## 💡 Lições Técnicas (Troubleshooting)
 
-Ao integrar Java com C++ via JNA usando as especificações da Auttar, foram tratados os seguintes cenários críticos neste código:
-
-### 1. O Erro 5331 / CT02 (Erro ao Confirmar Dado)
-
-Este erro ocorre quando o PDV "quebra a sincronia" de comandos com a DLL. Comandos de tela (ex: `03 - Limpar Display`, `06 - Aguardar Tecla`, `01 - Exibir Mensagem`) exigem um *Acknowledge* (Eco).
-
-* **A Solução:** O método `tratarComandoInterativo` sempre devolve o **próprio comando recebido** para a DLL, a menos que seja um comando de entrada de dados (como um Menu ou Captura de Senha). Nunca force o retorno para `"00"` em todos os cenários.
-
-### 2. Limpeza de Buffers JNA (Sujeira de Memória)
-
-Ao contrário do C# (que gere o tamanho de `StringBuilders` automaticamente), no Java nós enviamos ponteiros de arrays brutos (`byte[]`). Se a DLL escreve 20 caracteres em uma iteração e apenas 5 na seguinte, os 15 caracteres antigos continuam lá.
-
-* **A Solução:** O projeto zera os buffers (`Arrays.fill(valor, (byte)0)`) explicitamente nos eventos interativos antes de enviar qualquer resposta de usuário para a DLL, garantindo que nenhum "lixo de memória" afete a próxima requisição.
-
-### 3. Timeout do PIX e Pinpad
-
-O projeto **não utiliza contadores de tempo (timers) em Java** para forçar o cancelamento por inatividade. A responsabilidade do *Timeout* pertence exclusivamente ao Servidor CTF / Pinpad.
-
-* **A Solução:** A aplicação escuta silenciosamente pela pergunta *"DESEJA CONSULTA-LO NOVAMENTE?"* disparada pelo CTFClient após a expiração do PIX e aplica a Auto-Resposta `"2"` (Não). Assim, o fluxo de cancelamento segue as regras e a temporização oficial da adquirente.
-
----
-
-**Desenvolvido como arquitetura de referência para integrações de automação comercial TEF com o Gateway Auttar.**
+* **Erro 5331 / CT02 (Erro ao Confirmar Dado):** Ocorre quando há quebra de sincronia. A solução aplicada foi sempre devolver o **próprio comando recebido** como *Acknowledge* (Eco) para a DLL, exceto em comandos de entrada de dados.
+* **Sujeira de Memória JNA:** Arrays brutos (`byte[]`) são zerados explicitamente (`Arrays.fill`) antes de cada envio para evitar que o lixo de memória da iteração anterior corrompa a requisição atual.
+* **Timeout do PIX e Pinpad:** Não utilizamos timers no Java. A aplicação escuta a pergunta "DESEJA CONSULTA-LO NOVAMENTE?" após a expiração do PIX e aplica a resposta automática "2" (Não).
