@@ -48,7 +48,7 @@ A interface `CtfClientLibrary.java` foi projetada para localizar a biblioteca na
 Dependendo do seu sistema operacional e setup físico, consulte os guias detalhados na pasta `tutoriais/`:
 
 * 🐧 [Configurando CTFClient x86 no Linux (Debian/Ubuntu)](tutoriais/SETUP_LINUX_X86.md)
-* 🔌 [Configurando Pinpad Gertec via regras UDEV no Linux](tutoriais/SETUP_PINPAD.md)
+* 🔌 [Configurando Pinpad Gertec via regras UDEV no Linux](tutoriais/SETUP_PINPAD_LINUX.md)
 * 💻 [Compartilhando USB (Pinpad) no WSL 2 do Windows](tutoriais/SETUP_WSL_USB.md)
 
 ## 💡 Lições Técnicas (Troubleshooting)
