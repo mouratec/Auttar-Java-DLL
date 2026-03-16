@@ -100,7 +100,7 @@ public class AuttarIntegrationService {
     }
 
     /**
-     * 🔄 O "Coração" do TEF (Loop de Continuação).
+     * O "Coração" do TEF (Loop de Continuação).
      * * A integração Auttar funciona como uma "Máquina de Estados". Após o 'iniciarTransacao',
      * o PDV deve chamar esta função repetidamente num loop (while) até que ela pare de retornar '99'.
      * * @param comando O que a DLL quer que o PDV faça (ex: "01" exibir mensagem, "05" exibir menu).
@@ -117,7 +117,7 @@ public class AuttarIntegrationService {
     }
 
     /**
-     * 🏁 Efetivação (Commit) ou Desfazimento (Rollback) da transação.
+     *  Efetivação (Commit) ou Desfazimento (Rollback) da transação.
      * * Fundamental para garantir a integridade financeira. Só chamamos o Confirmar ("1")
      * DEPOIS que o PDV imprimiu o cupom ou registrou a venda no banco de dados local.
      * Caso o PDV caia, falte papel ou dê timeout no PIX, manda-se o Desfazer ("0").
@@ -126,16 +126,23 @@ public class AuttarIntegrationService {
      * @param camposRetornados Coleção do Java para guardarmos o log/resultado desta função.
      */
     public void finalizarTransacao(String confirmar, String numTrans, Map<String, String> camposRetornados) {
+        // AUDITORIA DE SEGURANÇA: Mostra exatamente o que está indo para a DLL, enviado pela AC.
+        System.out.println("[CTFClient] CHAMANDO: finalizaTransacaoCTF");
+        System.out.println("NumTrans.....: " + numTrans);
+        System.out.println("FinalizaTransação Confirma : " + confirmar + " (Onde 1 = CONFIRMA e 0 = DESFAZIMENTO)");
+        System.out.println("=======================================================");
+
         byte[] resultado = new byte[256];
         CtfClientLibrary.INSTANCE.finalizaTransacaoCTF(resultado, confirmar, numTrans, dataFiscal);
-
-        // Salva a resposta da dll (ex: "0", "00" ou "18") dentro do nosso dicionário
-        // para auditoria ou prevenção de Erro 18 na camada de UI.
         camposRetornados.put("ResultadoFinalizacao", new String(resultado).trim());
     }
 
+        // Salva a resposta da dll (ex: "0", "00" ou "18") dentro do nosso dicionário
+        // para auditoria ou prevenção de Erro 18 na camada de UI.
+
+
     /**
-     * 🧩 Serializador de Dados Estendidos.
+     * Serializador de Dados Estendidos.
      * * O padrão da Auttar para enviar múltiplas informações extras é uma string única
      * delimitada por colchetes e ponto-e-vírgula. Formato: "[ID=VALOR;ID2=VALOR2]".
      * Exemplo de Cancelamento: "[7012=123456;7161=251224]".
@@ -165,7 +172,10 @@ public class AuttarIntegrationService {
                 if (request.getNsuOriginal() != null) dados.add(Subcampo.NsuCtfOriginal.valor + "=" + request.getNsuOriginal());
                 if (request.getDataOriginal() != null) dados.add(Subcampo.DataTransacaoOriginal.valor + "=" + request.getDataOriginal());
                 break;
-
+            case DesfazimentoPorNsu: // 🛡️ ADICIONADO: Mapeamento para a Operação 281
+                if (request.getNsuOriginal() != null) dados.add(Subcampo.NsuCtfOriginal.valor + "=" + request.getNsuOriginal());
+                if (request.getDataOriginal() != null) dados.add(Subcampo.DataTransacaoOriginal.valor + "=" + request.getDataOriginal());
+                break;
             case CancelamentoCreditoDigitado:
                 // Estornos de crédito digitado exigem os dados da venda original + o número do cartão para bater a segurança.
                 if (request.getNsuOriginal() != null) dados.add(Subcampo.NsuCtfOriginal.valor + "=" + request.getNsuOriginal());

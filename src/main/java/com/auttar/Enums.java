@@ -24,13 +24,17 @@ public class Enums {
         CreditoGenerico(223),
         DebitoGenerico(224),
 
-        // Vendas - Novas tecnologias
+        // Vendas -  PIX
         PagamentoPix(422),
 
         // Estornos e Cancelamentos
         CancelamentoGenerico(128),
         CancelamentoCreditoDigitado(411),
         DevolucaoPix(431),
+
+        // Desfazimento por NSU (Usado na Recuperação de Desastres)
+        DesfazimentoPorNsu(281),
+        ConfirmacaoPorNSU(280),
 
         // Consultas e Funções Administrativas
         ConsultaPix(423),
@@ -59,6 +63,7 @@ public class Enums {
         NumeroCartao(7006),           // PAN mascarado (Ex: 401234******9010).
         NumeroParcelas(7008),         // Quantidade de parcelas aprovadas.
         VencimentoCartao(7010),       // Validade do cartão (MMAA).
+
 
         // NSUs (Número Sequencial Único - Identificador do recibo)
         NsuCtfOriginal(7012),         // Usado na hora de fazer cancelamentos (NSU da venda original).

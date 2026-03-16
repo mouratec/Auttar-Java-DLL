@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.Scanner;
 
 /**
- * 🚀 **Classe Principal da Aplicação (Ponto de Entrada)**
+ * **Classe Principal da Aplicação (Ponto de Entrada)**
  * Interface de console (PDV modelo) que orquestra as vendas e a comunicação com a DLL da Auttar.
  * * DESTAQUES DE ARQUITETURA NESTA VERSÃO:
  * 1. Timeout Inteligente: O tempo do PIX é ditado pela adquirente/DLL, e não por timers no Java.
@@ -48,6 +48,12 @@ public class App {
             return;
         }
 
+        // VERIFICAÇÃO DE QUEDA DE ENERGIA/REDE
+        // Se o sistema caiu no meio de uma venda na última vez, ele resolve aqui.
+        GerenciadorRecuperacaoTef.verificarERecuperar(auttarService);
+
+        // Segue o fluxo normal do PDV
+
         while (handleMainMenu(auttarService)) {}
 
         System.out.println("Encerrando o programa...");
@@ -55,7 +61,7 @@ public class App {
     }
 
     // =========================================================================
-    // 🖥️ CAMADA DE APRESENTAÇÃO (MENUS DO SISTEMA)
+    // CAMADA DE APRESENTAÇÃO (MENUS DO SISTEMA)
     // =========================================================================
 
     private static boolean handleMainMenu(AuttarIntegrationService service) {
@@ -160,7 +166,7 @@ public class App {
     }
 
     // =========================================================================
-    // ⚙️ CAMADA CORE: GERENCIADOR DE TRANSAÇÕES
+    // CAMADA CORE: GERENCIADOR DE TRANSAÇÕES
     // =========================================================================
 
     /**
@@ -238,7 +244,7 @@ public class App {
                         codOperacaoReal != CodigoOperacao.ConfiguracaoCtfClient.valor &&
                         codOperacaoReal != CodigoOperacao.AutenticacaoTerminal.valor;
 
-        // TRAVA 2 CONTRA ERRO 18 NO PIX:
+        // TRAVA  CONTRA ERRO 18 NO PIX:
         // Lemos a Flag que foi injetada no `tratarComandoInterativo` durante o timeout do PIX.
         // Se ocorreu a tela de reconsulta e a venda não foi paga, a DLL já encerrou o processo e não
         // aceitará um FinalizaTransacao("0").
@@ -250,13 +256,29 @@ public class App {
             }
         }
 
-        // 4. O COMMIT / ROLLBACK (Aperto de mãos final)
+        // 4 -  O COMMIT / ROLLBACK (Aperto de mãos final - Handshake)
         if (precisaFinalizar) {
+
+            // Passo A: Aprovou? Registra no disco ANTES de confirmar.
+            if (response.isAprovada()) {
+                String valorStr = request.getValor() != null ? String.format("%.2f", request.getValor()) : "0.00";
+
+            }
+
+            // IMPORTANTE: Passo B: Envia a confirmação ou cancelamento para a Auttar
+
             String confirmar = response.isAprovada() ? "1" : "0";
             service.finalizarTransacao(confirmar, numTrans, camposRetornados);
+
+            if (response.isAprovada()) {
+                GerenciadorRecuperacaoTef.atualizarStatusTransacao("CONFIRMADA");
+            }
+
+            // Passo C: Sobreviveu? Deu tudo certo? Limpa a pendência.
+            //GerenciadorRecuperacaoTef.limparPendencia();
         }
 
-        // 5. EXIBE RESULTADO NA TELA DO CAIXA
+        // 5-  EXIBE RESULTADO NA TELA DO CAIXA
         exibirResultado(request, response, numTrans);
     }
 
@@ -296,10 +318,6 @@ public class App {
         return response;
     }
 
-    /**
-     * Permite passar cartões diferentes até atingir o total da venda.
-     * Se o cliente desistir no meio, as transações anteriores são estornadas via rollback ("0").
-     */
     private static void handleVendaMultiplosCartoes(AuttarIntegrationService service, String docFiscalDaVenda) {
         System.out.println("\n--- VENDA COM MÚLTIPLOS CARTÕES ---");
         BigDecimal valorTotal = obterValorDaTransacao();
@@ -321,8 +339,23 @@ public class App {
             TransactionResponse response = executarTransacaoParcial(service, request, numeroDaTransacao);
 
             if (response != null && response.isAprovada()) {
-                exibirResultado(request, response, String.format("%02d", numeroDaTransacao));
+                String numTransStr = String.format("%02d", numeroDaTransacao);
+                exibirResultado(request, response, numTransStr);
                 transacoesAprovadas.add(response);
+
+                // SALVA A PENDÊNCIA ASSIM QUE O CARTÃO É APROVADO
+                String valorStr = String.format("%.2f", request.getValor());
+
+
+                // ATUALIZADO: Passa o seu docFiscalDaVenda gerenciado pelo seu ERP!
+                GerenciadorRecuperacaoTef.registrarPendencia(numTransStr, docFiscalDaVenda, valorStr, response.getCamposRetornados());
+
+
+                String nsu = response.getNsuCtf() != null ? response.getNsuCtf() : "N/A";
+                //String rede = response.getCamposRetornados().containsKey("010") ? response.getCamposRetornados().get("010") : "N/A";
+                //String bandeira = response.getCamposRetornados().containsKey("011") ? response.getCamposRetornados().get("011") : "N/A";
+                //GerenciadorRecuperacaoTef.registrarPendencia(numTransStr,
+
                 valorPendente = valorPendente.subtract(valorPagamento);
                 numeroDaTransacao++;
             } else {
@@ -333,10 +366,17 @@ public class App {
                     String escolha = scanner.nextLine().trim().toUpperCase();
 
                     if (escolha.startsWith("C")) {
-                        // ROLLBACK GERAL: Cancela no servidor tudo que havia sido pré-aprovado nesta compra.
                         if (!transacoesAprovadas.isEmpty()) {
-                            service.finalizarTransacao("0", "01", new HashMap<>());
-                            System.out.println("\nVENDA CANCELADA PELO UTILIZADOR. TRANSAÇÕES APROVADAS FORAM DESFEITAS.");
+                            for (TransactionResponse respAprovada : transacoesAprovadas) {
+                                String numTrans = respAprovada.getCamposRetornados().get("NumeroTransacao");
+                                // TRAVA DE SEGURANÇA: Se a DLL apagou o mapa, forçamos o "01" (ou o sequencial correto)
+                                if (numTrans == null || numTrans.isEmpty()) {
+                                    numTrans = "01";
+                                }
+                                service.finalizarTransacao("0", numTrans, new HashMap<>());
+                                GerenciadorRecuperacaoTef.atualizarStatusTransacao("DESFEITA_PELO_USUARIO");
+                            }
+                            System.out.println("\nVENDA CANCELADA. TRANSAÇÕES APROVADAS FORAM DESFEITAS.");
                         } else {
                             System.out.println("\nVENDA CANCELADA PELO UTILIZADOR.");
                         }
@@ -350,31 +390,28 @@ public class App {
             }
         }
 
-        // CONFIRMAÇÃO GERAL: Se chegou aqui, a venda foi 100% quitada. É seguro confirmar.
         if (valorPendente.compareTo(new BigDecimal("0.005")) < 0 && !transacoesAprovadas.isEmpty()) {
             System.out.println("\n--- FINALIZANDO VENDA ---");
             System.out.println("Venda totalmente paga. Confirmar todos os pagamentos? (S/N)");
             if (scanner.nextLine().trim().equalsIgnoreCase("S")) {
-                System.out.println("\n--- RESUMO DOS PAGAMENTOS APROVADOS ---");
-                for (TransactionResponse respAprovada : transacoesAprovadas) {
-                    String numTrans = respAprovada.getCamposRetornados().get("NumeroTransacao");
-                    exibirResultado(respAprovada.getOperacaoRequest(), respAprovada, numTrans);
-                }
                 System.out.println("Confirmando transações no sistema...");
                 for (TransactionResponse respAprovada : transacoesAprovadas) {
                     String numTrans = respAprovada.getCamposRetornados().get("NumeroTransacao");
+                    // TRAVA DE SEGURANÇA
+                    if (numTrans == null || numTrans.isEmpty()) {
+                        numTrans = "01";
+                    }
                     service.finalizarTransacao("1", numTrans, respAprovada.getCamposRetornados());
+                    GerenciadorRecuperacaoTef.atualizarStatusTransacao("CONFIRMADA");
                 }
                 System.out.println("\nVENDA CONFIRMADA COM SUCESSO!");
             } else {
-                service.finalizarTransacao("0", "01", new HashMap<>());
-                System.out.println("\nVENDA CANCELADA PELO UTILIZADOR. TODAS AS TRANSAÇÕES FORAM DESFEITAS.");
+                for (TransactionResponse respAprovada : transacoesAprovadas) {
+                    String numTrans = respAprovada.getCamposRetornados().get("NumeroTransacao");
+                    service.finalizarTransacao("0", numTrans, new HashMap<>());
+                }
+
             }
-        } else if (!transacoesAprovadas.isEmpty()) {
-            service.finalizarTransacao("0", "01", new HashMap<>());
-            System.out.println("\nVENDA NÃO CONCLUÍDA. TODAS AS TRANSAÇÕES APROVADAS FORAM DESFEITAS.");
-        } else {
-            System.out.println("\nNenhum pagamento foi aprovado. Venda cancelada.");
         }
     }
 
@@ -488,7 +525,7 @@ public class App {
     }
 
     // =========================================================================
-    // 🧰 MÉTODOS AUXILIARES: CONSTRUÇÃO DE REQUISIÇÕES
+    //  MÉTODOS AUXILIARES: CONSTRUÇÃO DE REQUISIÇÕES
     // =========================================================================
 
     private static TransactionRequest criarRequestPadrao(CodigoOperacao operacao, String docFiscal) {
@@ -604,7 +641,7 @@ public class App {
     }
 
     // =========================================================================
-    // 🧮 FORMATAÇÕES E COLETA DE INFORMAÇÃO BÁSICA
+    // FORMATAÇÕES E COLETA DE INFORMAÇÃO BÁSICA
     // =========================================================================
 
     private static BigDecimal obterValorDaTransacao() {

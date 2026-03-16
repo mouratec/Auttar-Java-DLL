@@ -4,7 +4,7 @@ import java.math.BigDecimal;
 import com.auttar.Enums.CodigoOperacao;
 
 /**
- * 📦 Modelo de Requisição de Transação (DTO - Data Transfer Object)
+ * Modelo de Requisição de Transação (DTO - Data Transfer Object)
  * * Qual o objetivo desta classe?
  * Em vez de passar 8 ou 9 parâmetros separados para o método iniciarTransacao()
  * (o que deixaria o código confuso), nós "empacotamos" todas as informações que o
@@ -14,7 +14,7 @@ import com.auttar.Enums.CodigoOperacao;
 public class TransactionRequest {
 
     // -------------------------------------------------------------------------
-    // 📌 DADOS OBRIGATÓRIOS (Base de qualquer transação)
+    //  DADOS OBRIGATÓRIOS (Base de qualquer transação)
     // -------------------------------------------------------------------------
 
     /** * O "O Quê". Define a intenção da chamada na DLL.
@@ -35,7 +35,7 @@ public class TransactionRequest {
 
 
     // -------------------------------------------------------------------------
-    // 🔙 DADOS PARA CANCELAMENTO E ESTORNO (A "Máquina do Tempo")
+    //  DADOS PARA CANCELAMENTO E ESTORNO (A "Máquina do Tempo")
     // -------------------------------------------------------------------------
 
     /** * O "RG" da transação antiga. NSU (Número Sequencial Único).
@@ -51,7 +51,7 @@ public class TransactionRequest {
 
 
     // -------------------------------------------------------------------------
-    // 💳 DADOS PARA TRANSAÇÕES MANUAIS (Sem passar o cartão na maquininha)
+    //  DADOS PARA TRANSAÇÕES MANUAIS (Sem passar o cartão na maquininha)
     // -------------------------------------------------------------------------
 
     /** * O PAN (Primary Account Number). Usado exclusivamente em operações de
@@ -65,7 +65,7 @@ public class TransactionRequest {
 
 
     // -------------------------------------------------------------------------
-    // 🛒 DADOS PARA PARCELAMENTO
+    // 🛒DADOS PARA PARCELAMENTO
     // -------------------------------------------------------------------------
 
     /** * Quantidade de cotas em que o valor será dividido.
