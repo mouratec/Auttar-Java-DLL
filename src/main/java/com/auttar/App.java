@@ -73,6 +73,7 @@ public class App {
         System.out.println(" 3. Reimpressao do Ultimo Cupom         ");
         System.out.println(" 4. Configuracao CTFClient              ");
         System.out.println(" 5. Autenticacao do Terminal            ");
+        System.out.println(" 6. Executar GerenciadorRecuperacao TEF ");
         System.out.println(" 0. Sair                                ");
         System.out.println("------------------------------------------");
         System.out.print("\nOpcao: ");
@@ -85,6 +86,10 @@ public class App {
             case "3": request = criarRequestReimpressao(); break;
             case "4": request = criarRequestConfiguracao(); break;
             case "5": request = criarRequestAutenticacao(); break;
+            case "6":
+                System.out.println("\n[SISTEMA] Iniciando varredura manual de pendências...");
+                GerenciadorRecuperacaoTef.verificarERecuperar(service);
+                break;
             case "0": return false;
             default: System.out.println("Opção inválida."); break;
         }
@@ -115,7 +120,7 @@ public class App {
             String escolha = scanner.nextLine();
             TransactionRequest request = null;
 
-            // Opcional: Aqui poderíamos gerar um número de cupom fiscal real vindo de um ERP.
+            // Opcional e personalizavel : Aqui poderíamos gerar um número de cupom fiscal real vindo de um ERP/AC.
             String docFiscal = null;
 
             switch (escolha) {
@@ -232,7 +237,8 @@ public class App {
         if (codOperacaoFinalStr != null && !codOperacaoFinalStr.trim().isEmpty()) {
             try {
                 codOperacaoReal = Integer.parseInt(codOperacaoFinalStr);
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException ignored) {
+            }
         }
 
         // Verifica se a operação concluída é passível de Confirmação Final.
@@ -256,31 +262,43 @@ public class App {
             }
         }
 
-        // 4 -  O COMMIT / ROLLBACK (Aperto de mãos final - Handshake)
+        // 4 - O COMMIT / ROLLBACK (Aperto de mãos final - Handshake)
         if (precisaFinalizar) {
 
-            // Passo A: Aprovou? Registra no disco ANTES de confirmar.
+            // Passo A: Aprovou? Registra no disco ANTES de enviar a confirmação para a Auttar.
             if (response.isAprovada()) {
                 String valorStr = request.getValor() != null ? String.format("%.2f", request.getValor()) : "0.00";
 
+                // Passando 'null' no segundo parâmetro, o próprio GerenciadorRecuperacaoTef
+                // assume o controle do docFiscal (buscando o subcampo 7900 da DLL ou usando o sequencial).
+                GerenciadorRecuperacaoTef.registrarPendencia(numTrans, null, valorStr, camposRetornados);
             }
 
-            // IMPORTANTE: Passo B: Envia a confirmação ou cancelamento para a Auttar
-
+            // IMPORTANTE: Passo B: Envia a confirmação (1) ou Desfazimento (0) para a Auttar E CAPTURA O RETORNO
             String confirmar = response.isAprovada() ? "1" : "0";
-            service.finalizarTransacao(confirmar, numTrans, camposRetornados);
+            boolean finalizacaoComSucesso = service.finalizarTransacao(confirmar, numTrans, camposRetornados);
 
+            // Passo C: Tomada de decisão baseada no SUCESSO REAL da comunicação com a DLL
             if (response.isAprovada()) {
-                GerenciadorRecuperacaoTef.atualizarStatusTransacao("CONFIRMADA");
-            }
+                if (finalizacaoComSucesso) {
+                    // Cenário Perfeito: Aprovou no banco E a DLL confirmou com sucesso.
+                    GerenciadorRecuperacaoTef.atualizarStatusTransacao("CONFIRMADA");
+                } else {
+                    // Cenário de Falha: Aprovou no banco, mas o CTFClient estava fechado ou travou.
+                    System.out.println("\n🚨 [ALERTA CRÍTICO] A transação foi aprovada pelo banco, mas falhou ao confirmar localmente!");
+                    System.out.println("🚨 O status permanecerá PENDENTE no log diário para desfazimento automático.");
 
-            // Passo C: Sobreviveu? Deu tudo certo? Limpa a pendência.
-            //GerenciadorRecuperacaoTef.limparPendencia();
+                    // Alteramos a resposta para false para que o seu PDV saiba que não deve imprimir o cupom nem entregar a mercadoria.
+                    response.setAprovada(false);
+                }
+            }
         }
 
-        // 5-  EXIBE RESULTADO NA TELA DO CAIXA
+// 5 - EXIBE RESULTADO NA TELA DO CAIXA
         exibirResultado(request, response, numTrans);
+
     }
+
 
     /**
      * Versão enxuta do `executarFluxoDeTransacao`, projetada para retornar o objeto TransactionResponse

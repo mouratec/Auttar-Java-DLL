@@ -68,7 +68,7 @@ public class GerenciadorRecuperacaoTef {
                 writer.println(s + ".opRealizada=" + prop.getProperty(s + ".opRealizada", "N/A"));
                 writer.println(s + ".dataHora=" + prop.getProperty(s + ".dataHora", ""));
                 writer.println(s + ".valor=" + prop.getProperty(s + ".valor", ""));
-                writer.println(s + ".nsuHost=" + prop.getProperty(s + ".nsuHost", "N/A"));
+                writer.println(s + ".nsuCTF=" + prop.getProperty(s + ".nsuCTF", "N/A"));
                 writer.println(s + ".rede=" + prop.getProperty(s + ".rede", "N/A"));
                 writer.println(s + ".bandeira=" + prop.getProperty(s + ".bandeira", "N/A"));
                 writer.println(s + ".codErro=" + prop.getProperty(s + ".codErro", ""));
@@ -114,7 +114,7 @@ public class GerenciadorRecuperacaoTef {
         prop.setProperty(p + "opRealizada", opRealizada);
         prop.setProperty(p + "dataHora", LocalDateTime.now().toString());
         prop.setProperty(p + "valor", valorSolicitado);
-        prop.setProperty(p + "nsuHost", nsu);
+        prop.setProperty(p + "nsuCTF", nsu);
         prop.setProperty(p + "rede", rede);
         prop.setProperty(p + "bandeira", bandeira);
         prop.setProperty(p + "codErro", erro);
@@ -157,7 +157,7 @@ public class GerenciadorRecuperacaoTef {
             if ("PENDENTE".equals(prop.getProperty(prefixo + "status"))) {
                 houveRecuperacao = true;
                 String numTrans = prop.getProperty(prefixo + "numTrans", "01");
-                String nsu = prop.getProperty(prefixo + "nsuHost", "N/A");
+                String nsu = prop.getProperty(prefixo + "nsuCTF", "N/A");
 
                 System.out.println("\n=======================================================");
                 System.out.println("[SISTEMA] - IDENTIFICADA INTERRUPÇÃO");
@@ -176,7 +176,7 @@ public class GerenciadorRecuperacaoTef {
                 prop.setProperty(prefixo + "status", "DESFEITA_POR_RECUPERACAO");
                 salvarPropriedades(prop);
 
-                System.out.println("[RECUPERAÇÃO] Transação desfeita com sucesso no CTF! \nNSU:");
+                System.out.println("[RECUPERAÇÃO] Transação desfeita com sucesso no CTF!");
             }
         }
 

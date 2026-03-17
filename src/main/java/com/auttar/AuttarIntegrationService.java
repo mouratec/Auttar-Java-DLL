@@ -125,20 +125,34 @@ public class AuttarIntegrationService {
      * @param numTrans O número sequencial da transação que está sendo finalizada.
      * @param camposRetornados Coleção do Java para guardarmos o log/resultado desta função.
      */
-    public void finalizarTransacao(String confirmar, String numTrans, Map<String, String> camposRetornados) {
+    public boolean finalizarTransacao(String confirmar, String numTrans, Map<String, String> camposRetornados) {
         // AUDITORIA DE SEGURANÇA: Mostra exatamente o que está indo para a DLL, enviado pela AC.
         System.out.println("[CTFClient] CHAMANDO: finalizaTransacaoCTF");
         System.out.println("NumTrans.....: " + numTrans);
         System.out.println("FinalizaTransação Confirma : " + confirmar + " (Onde 1 = CONFIRMA e 0 = DESFAZIMENTO)");
         System.out.println("=======================================================");
 
+        // Mantido o array de bytes conforme solicitado
         byte[] resultado = new byte[256];
         CtfClientLibrary.INSTANCE.finalizaTransacaoCTF(resultado, confirmar, numTrans, dataFiscal);
-        camposRetornados.put("ResultadoFinalizacao", new String(resultado).trim());
-    }
+
+        // Converte o array de bytes para String e remove espaços em branco
+        String retorno = new String(resultado).trim();
 
         // Salva a resposta da dll (ex: "0", "00" ou "18") dentro do nosso dicionário
         // para auditoria ou prevenção de Erro 18 na camada de UI.
+        camposRetornados.put("ResultadoFinalizacao", retorno);
+
+        // Validação Profissional: Verifica se a DLL confirmou o sucesso
+        if ("0".equals(retorno) || "00".equals(retorno)) {
+            System.out.println("[CTFClient] Finalização concluída com SUCESSO. Retorno DLL: " + retorno);
+            return true;
+        } else {
+            System.err.println("[ERRO CRÍTICO] Falha ao finalizar a transação no CTFClient!");
+            System.err.println("Motivo/Código de Retorno: " + retorno);
+            return false;
+        }
+    }
 
 
     /**
@@ -155,7 +169,7 @@ public class AuttarIntegrationService {
 
         // REGRA GLOBAL: Se houver parcelamento, a DLL sempre exige o subcampo 7008
         if (request.getNumeroParcelas() != null && request.getNumeroParcelas() > 0) {
-            // Garante que fique com duas posições (ex: "03" ou "12" parcelas)
+            // Garante que fique com duas posições (ex: "02" ou "12" parcelas)
             dados.add(String.valueOf(Subcampo.NumeroParcelas.valor) + "=" + String.format("%02d", request.getNumeroParcelas()));
         }
 
