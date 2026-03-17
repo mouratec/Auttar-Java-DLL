@@ -1,0 +1,46 @@
+# ==========================================
+# Log Diario de Transacoes TEF (Auditoria)
+# Data: 2026-03-16
+# ==========================================
+
+ultimo_sequencial=3
+
+# --- Registro 001 ---
+001.status=CONFIRMADA
+001.numTrans=01
+001.docFiscal=001
+001.opRealizada=DEBITO A VISTA
+001.dataHora=2026-03-16T21:07:35.924
+001.valor=99,00
+001.nsuCTF=260119
+001.rede=GETNET
+001.bandeira=DEBITO A VISTA
+001.codErro=0000
+001.msgErro=SUCESSO
+d
+# --- Registro 002 ---
+002.status=DESFEITA_POR_RECUPERACAO
+002.numTrans=01
+002.docFiscal=002
+002.opRealizada=CREDITO A VISTA
+002.dataHora=2026-03-16T21:08:36.416
+002.valor=20,00
+002.nsuCTF=260120
+002.rede=GETNET
+002.bandeira=CREDITO A VISTA
+002.codErro=0000
+002.msgErro=SUCESSO
+
+# --- Registro 003 ---
+003.status=DESFEITA_POR_RECUPERACAO
+003.numTrans=01
+003.docFiscal=003
+003.opRealizada=DEBITO A VISTA
+003.dataHora=2026-03-16T21:35:06.313
+003.valor=50,00
+003.nsuCTF=260122
+003.rede=GETNET
+003.bandeira=DEBITO A VISTA
+003.codErro=0000
+003.msgErro=SUCESSO
+
